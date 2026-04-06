@@ -1,12 +1,13 @@
 # Sakura VPS IPv6 Script
 
-`sakura-vps-ipv6.sh` 用于在 `Ubuntu/Debian + netplan` 环境下为樱花 VPS 开启 IPv6（自动获取 SLAAC/DHCPv6），并提供备份与失败回滚能力。
+`sakura-vps-ipv6.sh` 用于在樱花官方原生 Debian（`ifupdown`）环境下按教程方式开启 IPv6，并支持备份与失败回滚。
 
 ## 前提条件
 
-- 系统：`Ubuntu` 或 `Debian`
-- 网络管理：`netplan`
+- 系统：`Debian 12`（或兼容 `ifupdown` 的 Debian/Ubuntu）
+- 网络管理：`/etc/network/interfaces`（`ifupdown`）
 - 权限：`root`（或 `sudo`）
+- `interfaces` 中存在目标网卡的 `iface <网卡> inet6 static` 配置块（可被注释）
 
 ## 脚本位置
 
@@ -22,7 +23,7 @@ sudo ./sakura-vps-ipv6.sh [options]
 
 - `--iface <name>`：指定网卡（默认自动检测默认路由网卡）
 - `--dry-run`：仅预览变更，不写入配置
-- `--no-apply`：写入配置但不执行 `netplan apply`
+- `--no-apply`：仅写入配置，不执行 `sysctl -p` 和 `ip -6` 立即生效命令
 - `--force`：跳过交互确认
 - `--backup-dir <path>`：自定义备份目录（默认 `/var/backups/sakura-ipv6`）
 - `-h, --help`：查看帮助
@@ -41,26 +42,44 @@ sudo ./sakura-vps-ipv6.sh --dry-run
 sudo ./sakura-vps-ipv6.sh --force
 ```
 
-3. 指定网卡并写入但不立即生效：
+3. 指定网卡并仅写配置（不立即生效）：
 
 ```bash
 sudo ./sakura-vps-ipv6.sh --iface ens3 --no-apply --force
 ```
 
-之后手动生效：
+之后手动生效（教程同款）：
 
 ```bash
-sudo netplan apply
+sudo sysctl -p
+sudo ip -6 addr add <你的IPv6>/64 dev ens3
+sudo ip -6 route replace default via fe80::1 dev ens3
+ping6 -c3 ipv6.google.com
 ```
 
 ## 回滚说明
 
-脚本会在执行时自动备份 `/etc/netplan` 到类似目录：
+脚本会在执行时自动备份以下文件到类似目录：
 
-`/var/backups/sakura-ipv6/YYYYmmdd-HHMMSS/netplan`
+- `/etc/sysctl.conf`
+- `/etc/network/interfaces`
+
+备份路径示例：
+
+`/var/backups/sakura-ipv6/YYYYmmdd-HHMMSS/`
 
 如需回滚，可恢复备份内容后执行：
 
 ```bash
-sudo netplan apply
+sudo sysctl -p
 ```
+
+## 脚本做了什么
+
+1. 在 `/etc/sysctl.conf` 中确保以下键为 `0`：
+- `net.ipv6.conf.all.disable_ipv6`
+- `net.ipv6.conf.default.disable_ipv6`
+- `net.ipv6.conf.<iface>.disable_ipv6`
+2. 在 `/etc/network/interfaces` 启用 `iface <iface> inet6 static` 段（取消注释）
+3. 从配置中读取 IPv6 地址/网关，执行 `ip -6` 命令立即生效
+4. 执行 `ping6 -c3 ipv6.google.com` 验证连通性
