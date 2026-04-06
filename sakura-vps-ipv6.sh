@@ -14,6 +14,7 @@ CHECK_ERROR=""
 
 INTERFACES_FILE="/etc/network/interfaces"
 SYSCTL_FILE="/etc/sysctl.conf"
+SYSCTL_D_DIR="/etc/sysctl.d"
 
 usage() {
   cat <<'EOF'
@@ -140,6 +141,15 @@ create_backup() {
   mkdir -p "$backup_path" || die "Failed to create backup directory: $backup_path"
   cp -a "$SYSCTL_FILE" "$backup_path/sysctl.conf.bak" || die "Failed to backup $SYSCTL_FILE"
   cp -a "$INTERFACES_FILE" "$backup_path/interfaces.bak" || die "Failed to backup $INTERFACES_FILE"
+  # Backup any sysctl.d files that contain disable_ipv6
+  local file basename
+  mkdir -p "$backup_path/sysctl.d"
+  for file in $(find_sysctl_d_ipv6_files); do
+    [[ -f "$file" ]] || continue
+    [[ "$(readlink -f "$file")" == "$(readlink -f "$SYSCTL_FILE")" ]] && continue
+    basename="$(basename "$file")"
+    cp -a "$file" "$backup_path/sysctl.d/$basename.bak" || die "Failed to backup $file"
+  done
   printf '%s' "$backup_path"
 }
 
@@ -149,6 +159,15 @@ restore_backup() {
   [[ -f "$backup_path/interfaces.bak" ]] || die "Missing backup file: $backup_path/interfaces.bak"
   cp -a "$backup_path/sysctl.conf.bak" "$SYSCTL_FILE" || die "Failed to restore $SYSCTL_FILE"
   cp -a "$backup_path/interfaces.bak" "$INTERFACES_FILE" || die "Failed to restore $INTERFACES_FILE"
+  # Restore sysctl.d backups
+  local bak orig_name
+  if [[ -d "$backup_path/sysctl.d" ]]; then
+    for bak in "$backup_path/sysctl.d"/*.bak; do
+      [[ -f "$bak" ]] || continue
+      orig_name="$(basename "$bak" .bak)"
+      cp -a "$bak" "$SYSCTL_D_DIR/$orig_name" || die "Failed to restore $SYSCTL_D_DIR/$orig_name"
+    done
+  fi
 }
 
 update_key_in_file() {
@@ -189,6 +208,29 @@ prepare_sysctl_file() {
   update_key_in_file "$file" "net.ipv6.conf.all.disable_ipv6" "0"
   update_key_in_file "$file" "net.ipv6.conf.default.disable_ipv6" "0"
   update_key_in_file "$file" "net.ipv6.conf.${IFACE}.disable_ipv6" "0"
+}
+
+# Find and fix any sysctl.d files that disable IPv6
+find_sysctl_d_ipv6_files() {
+  local files=()
+  if [[ -d "$SYSCTL_D_DIR" ]]; then
+    while IFS= read -r -d '' f; do
+      files+=("$f")
+    done < <(grep -rlZ "disable_ipv6" "$SYSCTL_D_DIR" 2>/dev/null || true)
+  fi
+  printf '%s\n' "${files[@]}"
+}
+
+prepare_sysctl_d_files() {
+  local file
+  for file in $(find_sysctl_d_ipv6_files); do
+    [[ -f "$file" ]] || continue
+    # Skip the symlink to sysctl.conf (already handled)
+    [[ "$(readlink -f "$file")" == "$(readlink -f "$SYSCTL_FILE")" ]] && continue
+    log "Fixing disable_ipv6 in $file"
+    update_key_in_file "$file" "net.ipv6.conf.all.disable_ipv6" "0"
+    update_key_in_file "$file" "net.ipv6.conf.default.disable_ipv6" "0"
+  done
 }
 
 prepare_interfaces_file() {
@@ -299,8 +341,8 @@ apply_runtime() {
     cidr="${address}/${netmask:-64}"
   fi
 
-  if ! sysctl -p >/tmp/"$SCRIPT_NAME".sysctl.log 2>&1; then
-    APPLY_ERROR="sysctl -p failed (log: /tmp/${SCRIPT_NAME}.sysctl.log)"
+  if ! sysctl --system >/tmp/"$SCRIPT_NAME".sysctl.log 2>&1; then
+    APPLY_ERROR="sysctl --system failed (log: /tmp/${SCRIPT_NAME}.sysctl.log)"
     return 1
   fi
 
@@ -363,11 +405,12 @@ main() {
   log "Target interface: $IFACE"
   log "Mode: dry-run=$DRY_RUN, no-apply=$NO_APPLY, force=$FORCE"
 
+  _CLEANUP_FILES=()
   local sysctl_tmp interfaces_tmp parse_tmp
-  sysctl_tmp="$(mktemp)"
-  interfaces_tmp="$(mktemp)"
-  parse_tmp="$(mktemp)"
-  trap 'rm -f "$sysctl_tmp" "$interfaces_tmp" "$parse_tmp"' EXIT
+  sysctl_tmp="$(mktemp)"; _CLEANUP_FILES+=("$sysctl_tmp")
+  interfaces_tmp="$(mktemp)"; _CLEANUP_FILES+=("$interfaces_tmp")
+  parse_tmp="$(mktemp)"; _CLEANUP_FILES+=("$parse_tmp")
+  trap 'rm -f "${_CLEANUP_FILES[@]}"' EXIT
 
   cp -a "$SYSCTL_FILE" "$sysctl_tmp"
   cp -a "$INTERFACES_FILE" "$interfaces_tmp"
@@ -379,6 +422,19 @@ main() {
 
   print_diff "$SYSCTL_FILE" "$sysctl_tmp" "$SYSCTL_FILE"
   print_diff "$INTERFACES_FILE" "$interfaces_tmp" "$INTERFACES_FILE"
+
+  # Preview sysctl.d changes
+  local sysctl_d_file sysctl_d_tmp
+  for sysctl_d_file in $(find_sysctl_d_ipv6_files); do
+    [[ -f "$sysctl_d_file" ]] || continue
+    [[ "$(readlink -f "$sysctl_d_file")" == "$(readlink -f "$SYSCTL_FILE")" ]] && continue
+    sysctl_d_tmp="$(mktemp)"
+    cp -a "$sysctl_d_file" "$sysctl_d_tmp"
+    update_key_in_file "$sysctl_d_tmp" "net.ipv6.conf.all.disable_ipv6" "0"
+    update_key_in_file "$sysctl_d_tmp" "net.ipv6.conf.default.disable_ipv6" "0"
+    print_diff "$sysctl_d_file" "$sysctl_d_tmp" "$sysctl_d_file"
+    rm -f "$sysctl_d_tmp"
+  done
 
   extract_ipv6_values "$interfaces_tmp" > "$parse_tmp"
   # shellcheck disable=SC1090
@@ -393,7 +449,7 @@ main() {
     if [[ "$NO_APPLY" -eq 1 ]]; then
       log "Would write files only (no runtime apply)."
     else
-      log "Would run: sysctl -p"
+      log "Would run: sysctl --system"
       log "Would run: ip -6 addr add <address>/<netmask> dev $IFACE (skip if exists)"
       log "Would run: ip -6 route replace default via $GATEWAY dev $IFACE"
       log "Would run: ping6 -c3 ipv6.google.com"
@@ -407,12 +463,13 @@ main() {
 
   cp -a "$sysctl_tmp" "$SYSCTL_FILE"
   cp -a "$interfaces_tmp" "$INTERFACES_FILE"
+  prepare_sysctl_d_files
   log "Configuration files updated."
 
   if [[ "$NO_APPLY" -eq 1 ]]; then
     log "--no-apply set; skip runtime apply."
     log "Manual apply commands:"
-    log "  sysctl -p"
+    log "  sysctl --system"
     log "  ip -6 addr add ${ADDRESS}/${NETMASK} dev $IFACE"
     log "  ip -6 route replace default via $GATEWAY dev $IFACE"
     exit 0
@@ -421,14 +478,14 @@ main() {
   if ! apply_runtime "$ADDRESS" "$NETMASK" "$GATEWAY"; then
     warn "Runtime apply failed. Restoring backup..."
     restore_backup "$backup_path"
-    sysctl -p >/dev/null 2>&1 || true
+    sysctl --system >/dev/null 2>&1 || true
     die "IPv6 enable failed. Rolled back. Reason: ${APPLY_ERROR:-unknown error}. Backup: $backup_path"
   fi
 
   if ! run_ping_check; then
     warn "IPv6 validation failed. Restoring backup..."
     restore_backup "$backup_path"
-    sysctl -p >/dev/null 2>&1 || true
+    sysctl --system >/dev/null 2>&1 || true
     die "IPv6 enable failed. Rolled back. Reason: ${CHECK_ERROR:-unknown validation error}. Backup: $backup_path"
   fi
 
