@@ -196,7 +196,12 @@ prepare_interfaces_file() {
   awk -v iface="$IFACE" '
     BEGIN { in_blk=0; found=0 }
     function uncomment_once(s) {
-      sub(/^[[:space:]]*#[[:space:]]*/, "", s)
+      if (match(s, /^[[:space:]]*#/)) {
+        prefix = substr(s, 1, RLENGTH - 1)
+        suffix = substr(s, RLENGTH + 1)
+        sub(/^ /, "", suffix)
+        return prefix suffix
+      }
       return s
     }
     {
@@ -218,7 +223,7 @@ prepare_interfaces_file() {
         next
       }
 
-      if (line ~ /^[[:space:]]*$/ || line ~ /^[^[:space:]#]/) {
+      if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*(iface|auto|allow-|mapping|source)[[:space:]]+/) {
         in_blk=0
         print line
         next
@@ -251,7 +256,7 @@ extract_ipv6_values() {
         next
       }
 
-      if (line ~ /^[[:space:]]*$/ || line ~ /^[^[:space:]#]/) {
+      if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*(iface|auto|allow-|mapping|source)[[:space:]]+/) {
         in_blk=0
         next
       }
