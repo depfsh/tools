@@ -10,12 +10,12 @@
 
 ## 脚本位置
 
-`/root/dev/tools/sakura-vps-ipv6.sh`
+当前目录下：`./sakura-vps-ipv6.sh`
 
 ## 基本用法
 
 ```bash
-sudo /root/dev/tools/sakura-vps-ipv6.sh [options]
+sudo ./sakura-vps-ipv6.sh [options]
 ```
 
 ## 参数说明
@@ -32,19 +32,19 @@ sudo /root/dev/tools/sakura-vps-ipv6.sh [options]
 1. 预演（不改配置）：
 
 ```bash
-sudo /root/dev/tools/sakura-vps-ipv6.sh --dry-run
+sudo ./sakura-vps-ipv6.sh --dry-run
 ```
 
 2. 正式启用 IPv6（推荐）：
 
 ```bash
-sudo /root/dev/tools/sakura-vps-ipv6.sh --force
+sudo ./sakura-vps-ipv6.sh --force
 ```
 
 3. 指定网卡并写入但不立即生效：
 
 ```bash
-sudo /root/dev/tools/sakura-vps-ipv6.sh --iface ens3 --no-apply --force
+sudo ./sakura-vps-ipv6.sh --iface ens3 --no-apply --force
 ```
 
 之后手动生效：
