@@ -9,6 +9,8 @@ NO_APPLY=0
 FORCE=0
 IFACE=""
 BACKUP_DIR="$DEFAULT_BACKUP_DIR"
+APPLY_ERROR=""
+CHECK_ERROR=""
 
 INTERFACES_FILE="/etc/network/interfaces"
 SYSCTL_FILE="/etc/sysctl.conf"
@@ -283,6 +285,7 @@ print_diff() {
 apply_runtime() {
   local address="$1" netmask="$2" gateway="$3"
   local address_only cidr
+  APPLY_ERROR=""
   address_only="${address%%/*}"
 
   if [[ "$address" == */* ]]; then
@@ -292,20 +295,28 @@ apply_runtime() {
   fi
 
   if ! sysctl -p >/tmp/"$SCRIPT_NAME".sysctl.log 2>&1; then
+    APPLY_ERROR="sysctl -p failed (log: /tmp/${SCRIPT_NAME}.sysctl.log)"
     return 1
   fi
 
   if ip -6 addr show dev "$IFACE" | awk '/inet6 /{print $2}' | cut -d/ -f1 | grep -Fxq "$address_only"; then
     log "IPv6 address already present on $IFACE: $address_only"
   else
-    ip -6 addr add "$cidr" dev "$IFACE"
+    if ! ip -6 addr add "$cidr" dev "$IFACE"; then
+      APPLY_ERROR="ip -6 addr add failed for $cidr on $IFACE"
+      return 1
+    fi
   fi
 
-  ip -6 route replace default via "$gateway" dev "$IFACE"
+  if ! ip -6 route replace default via "$gateway" dev "$IFACE"; then
+    APPLY_ERROR="ip -6 route replace default via $gateway dev $IFACE failed"
+    return 1
+  fi
 }
 
 run_ping_check() {
   local ping_cmd=""
+  CHECK_ERROR=""
   if command -v ping6 >/dev/null 2>&1; then
     ping_cmd="ping6"
   elif command -v ping >/dev/null 2>&1; then
@@ -313,14 +324,16 @@ run_ping_check() {
   fi
 
   if [[ -z "$ping_cmd" ]]; then
-    warn "No ping command found; skip connectivity check."
-    return
+    CHECK_ERROR="No ping command found (ping6/ping)."
+    return 1
   fi
 
   if $ping_cmd -c 3 ipv6.google.com >/dev/null 2>&1; then
     log "IPv6 connectivity check passed: ipv6.google.com"
+    return 0
   else
-    warn "IPv6 connectivity check failed: ipv6.google.com"
+    CHECK_ERROR="IPv6 connectivity check failed: ipv6.google.com"
+    return 1
   fi
 }
 
@@ -404,10 +417,17 @@ main() {
     warn "Runtime apply failed. Restoring backup..."
     restore_backup "$backup_path"
     sysctl -p >/dev/null 2>&1 || true
-    die "Apply failed and configs restored from backup: $backup_path"
+    die "IPv6 enable failed. Rolled back. Reason: ${APPLY_ERROR:-unknown error}. Backup: $backup_path"
   fi
 
-  run_ping_check
+  if ! run_ping_check; then
+    warn "IPv6 validation failed. Restoring backup..."
+    restore_backup "$backup_path"
+    sysctl -p >/dev/null 2>&1 || true
+    die "IPv6 enable failed. Rolled back. Reason: ${CHECK_ERROR:-unknown validation error}. Backup: $backup_path"
+  fi
+
+  log "IPv6 enabled and effective."
   log "Completed."
   log "Reboot check (recommended): reboot, then run 'ping6 -c3 ipv6.google.com'."
 }

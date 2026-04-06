@@ -83,3 +83,4 @@ sudo sysctl -p
 2. 在 `/etc/network/interfaces` 启用 `iface <iface> inet6 static` 段（取消注释）
 3. 从配置中读取 IPv6 地址/网关，执行 `ip -6` 命令立即生效
 4. 执行 `ping6 -c3 ipv6.google.com` 验证连通性
+5. 若立即生效或连通性验证失败，自动回滚配置并输出失败原因
